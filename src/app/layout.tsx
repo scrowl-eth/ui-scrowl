@@ -2,7 +2,7 @@
 import type { Metadata } from "next";
 
 
-// import ClientWrapper from "@/components/clientwrapper";
+import ClientWrapper from "../clientwrapper"
 import localFont from "next/font/local";
 import "./globals.css";
 
@@ -42,10 +42,10 @@ export default function RootLayout({
       <body
         className={`${transSansPremium.variable} font-sans antialiased bg-[#FFFAF4]`}
       >
-        {/* <ClientWrapper> */}
+        <ClientWrapper>
           {children}
 
-        {/* </ClientWrapper> */}
+        </ClientWrapper>
       </body>
     </html>
   );
