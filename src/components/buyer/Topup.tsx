@@ -1,8 +1,19 @@
+// src/app/game-top-up/page.tsx
 "use client"
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Search, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
 import Swal from 'sweetalert2';
+import {
+  useAccount,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from "wagmi";
+
+// Import your contract ABI
+import GameTopUpABI from "../../data/SCROWL_ABI.json"
+
+const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_GAME_TOPUP_CONTRACT_ADDRESS as `0x${string}`;
 
 interface TopUpOption {
   amount: string;
@@ -74,88 +85,182 @@ const games: Game[] = [
 
 const Topup: React.FC = () => {
   const [selectedOptions, setSelectedOptions] = useState<SelectedOptions>({});
+  const { address, isConnected } = useAccount();
 
-  const handleOptionSelect = (gameId: string, option: TopUpOption): void => {
-    setSelectedOptions({
-      ...selectedOptions,
-      [gameId]: option,
-    });
+  const {
+    writeContract,
+    data: hash,
+    isError: isWriteError,
+    error: writeError,
+  } = useWriteContract();
+
+  const {
+    isLoading: isConfirming,
+    isSuccess: isConfirmed,
+    error: confirmError,
+    data: transactionReceipt,
+  } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const handleOptionSelect = (gameId: string, option: TopUpOption) => {
+    setSelectedOptions(prev => ({
+      ...prev,
+      [gameId]: option
+    }));
   };
 
+
   const handlePurchase = async (game: Game): Promise<void> => {
-    const selectedOption = selectedOptions[game.id];
-    if (!selectedOption) {
-      Swal.fire({
-        title: 'Please select an amount',
-        icon: 'warning',
+    try {
+      if (!isConnected) {
+        const { isConfirmed } = await Swal.fire({
+          title: 'Wallet Not Connected',
+          text: 'Please connect your wallet to make a purchase',
+          icon: 'warning',
+          showCancelButton: true,
+          confirmButtonColor: '#FF684B',
+          confirmButtonText: 'Connect Wallet',
+        });
+
+        if (isConfirmed) {
+        }
+        return;
+      }
+
+      const selectedOption = selectedOptions[game.id];
+      if (!selectedOption) {
+        await Swal.fire({
+          title: 'Select Amount',
+          text: 'Please select a top-up amount',
+          icon: 'warning',
+          confirmButtonColor: '#FF684B',
+        });
+        return;
+      }
+
+      // Get game ID
+      const { value: gameId, isConfirmed: idConfirmed } = await Swal.fire({
+        title: `Enter your ${game.idLabel}`,
+        input: 'text',
+        inputLabel: 'Please enter your in-game ID',
+        inputPlaceholder: 'Enter ID here...',
+        showCancelButton: true,
+        confirmButtonColor: '#FF684B',
+        cancelButtonColor: '#666666',
+        inputValidator: (value) => {
+          if (!value) {
+            return 'Please enter your game ID!';
+          }
+          return null;
+        }
+      });
+
+      if (!idConfirmed || !gameId) return;
+
+      // Parse amount and calculate price
+      const amount = parseInt(selectedOption.amount.split(' ')[0]);
+      const priceInUSD = parseFloat(selectedOption.price.replace('$', ''));
+      const priceInEth = (priceInUSD * 0.0005).toFixed(18);
+
+      // Confirm purchase details
+      const { isConfirmed: purchaseConfirmed } = await Swal.fire({
+        title: 'Confirm Purchase',
+        html: `
+          <div class="text-left">
+            <p><strong>Game:</strong> ${game.name}</p>
+            <p><strong>Amount:</strong> ${selectedOption.amount}</p>
+            <p><strong>Price:</strong> ${priceInEth} ETH</p>
+            <p><strong>${game.idLabel}:</strong> ${gameId}</p>
+            <p><strong>Wallet:</strong> ${address}</p>
+          </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#FF684B',
+        cancelButtonColor: '#666666',
+        confirmButtonText: 'Confirm Purchase',
+        cancelButtonText: 'Cancel'
+      });
+
+      if (!purchaseConfirmed) return;
+
+
+      const newPrice = parseInt(priceInEth)
+
+      console.log(game.id, gameId, amount, priceInEth, BigInt(newPrice))
+      console.log(CONTRACT_ADDRESS)
+      // Call contract
+      await writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: GameTopUpABI,
+        functionName: "purchaseTopUp",
+        args: [game.id, gameId, amount],
+        value: BigInt(newPrice)
+      });
+      // Show processing message
+      await Swal.fire({
+        title: 'Processing Transaction',
+        html: 'Please confirm the transaction in your wallet...',
+        allowOutsideClick: false,
+        didOpen: () => {
+          Swal.showLoading();
+        }
+      });
+
+    } catch (error) {
+      console.error("Purchase failed:", error);
+      await Swal.fire({
+        title: 'Transaction Failed',
+        text: error instanceof Error ? error.message : 'Unknown error occurred',
+        icon: 'error',
         confirmButtonColor: '#FF684B',
       });
-      return;
     }
+  };
 
-    // First popup for game ID
-    const { value: gameId, isConfirmed } = await Swal.fire({
-      title: `Enter your ${game.idLabel}`,
-      input: 'text',
-      inputLabel: 'Please enter your in-game ID',
-      inputPlaceholder: 'Enter ID here...',
-      showCancelButton: true,
-      confirmButtonColor: '#FF684B',
-      cancelButtonColor: '#666666',
-      inputValidator: (value) => {
-        if (!value) {
-          return 'Please enter your game ID!';
-        }
-        return null;
-      }
-    });
+  // Handle write errors
+  useEffect(() => {
+    if (isWriteError && writeError) {
+      Swal.fire({
+        title: 'Transaction Failed',
+        text: writeError.message,
+        icon: 'error',
+        confirmButtonColor: '#FF684B',
+      });
+    }
+  }, [isWriteError, writeError]);
 
-    if (!isConfirmed) return;
-
-    // Confirmation popup
-    const result = await Swal.fire({
-      title: 'Confirm Purchase',
-      html: `
-        <div class="text-left">
-          <p><strong>Game:</strong> ${game.name}</p>
-          <p><strong>Amount:</strong> ${selectedOption.amount}</p>
-          <p><strong>Price:</strong> ${selectedOption.price}</p>
-          <p><strong>${game.idLabel}:</strong> ${gameId}</p>
-        </div>
-      `,
-      icon: 'question',
-      showCancelButton: true,
-      confirmButtonColor: '#FF684B',
-      cancelButtonColor: '#666666',
-      confirmButtonText: 'Confirm Purchase',
-      cancelButtonText: 'Cancel'
-    });
-
-    if (result.isConfirmed) {
-      // Success message
+  // Handle transaction confirmation
+  useEffect(() => {
+    if (isConfirmed && transactionReceipt) {
       Swal.fire({
         title: 'Purchase Successful!',
         html: `
           <p>Your purchase has been completed.</p>
-          <p class="text-sm mt-2">Transaction ID: ${Math.random().toString(36).substr(2, 9)}</p>
+          <p class="text-sm mt-2">Transaction Hash: ${hash}</p>
         `,
         icon: 'success',
-        confirmButtonColor: '#FF684B'
+        confirmButtonColor: '#FF684B',
       });
 
       // Clear selection
-      setSelectedOptions({
-        ...selectedOptions,
-        [game.id]: null,
+      setSelectedOptions({});
+    } else if (confirmError) {
+      Swal.fire({
+        title: 'Transaction Failed',
+        text: confirmError.message,
+        icon: 'error',
+        confirmButtonColor: '#FF684B',
       });
     }
-  };
+  }, [isConfirmed, confirmError, transactionReceipt, hash]);
 
   return (
     <div className="min-h-screen bg-scroll-cream">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
-        <div className="mb-8">
+        <div className="flex justify-between items-center mb-8">
           <Link href="/" className="inline-flex items-center text-charcoal hover:text-primary">
             <ArrowLeft className="w-5 h-5 mr-2" />
             <span className="text-xl">Back to Categories</span>
@@ -226,9 +331,9 @@ const Topup: React.FC = () => {
                   hover:bg-primary/90 transition-colors duration-200 disabled:opacity-50 
                   disabled:cursor-not-allowed"
                 onClick={() => handlePurchase(game)}
-                disabled={!selectedOptions[game.id]}
+                disabled={!selectedOptions[game.id] || isConfirming}
               >
-                Buy Now
+                {isConfirming ? 'Processing...' : 'Buy Now'}
               </button>
             </div>
           ))}
